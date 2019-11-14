@@ -1,46 +1,49 @@
 let fs = require('fs');
-let parse = require('csv-parse');
-let async = require('async');
+let es = require('event-stream');
+let lineNumber = 0;
 
-let inputFile = 'CD_INTERVAL_READING_ALL_NO_QUOTES.csv';
+let inputFile = 'smart_grid_data.csv';
 let outputFile = 'preprocessed_data.csv';
 let counter = 0;
 let max_dimensions = 30;
 let dataMap = new Map();
+let dataLimit = 5000000*1000;
 
 let writeData = function (dataMap) {
-  let writeStream = fs.createWriteStream(outputFile, {flags: 'w'});
+  let data = 'ID, ';
 
-  writeStream.write('ID, ');
   for(let count = 1; count <= max_dimensions; count++) {
-    writeStream.write('LOAD' + count);
+    data = data + 'LOAD' + count;
     if(count !== max_dimensions) {
-      writeStream.write(', ');
+      data += ', ';
     }
   }
-  writeStream.write('\n');
+  data += '\n';
 
   for(let [customerId, loadValues] of dataMap.entries()) {
-    writeStream.write(customerId + ', ');
+    data = data + customerId + ', ';
 
     for(let count = 0; count < max_dimensions; count++) {
       if(count < loadValues.length) {
-        writeStream.write(loadValues[count]);
+        data = data + loadValues[count];
       } else{
-        writeStream.write('0');
+        data = data + '0';
       }
 
       if(count !== (max_dimensions - 1)) {
-        writeStream.write(', ');
+        data = data + ', ';
       }
     }
 
-    writeStream.write('\n');
+    data = data + '\n';
   }
+
+  fs.writeFileSync(outputFile,data);
+  process.exit();
 };
 
-let parser = parse({delimiter: ','}, function (err, data) {
-  async.eachSeries(data, function (line, callback) {
+let parser = function (line) {
+
     if(counter > 0) {
       let loadsList = [];
 
@@ -57,15 +60,31 @@ let parser = parse({delimiter: ','}, function (err, data) {
       dataMap.set(line[0], loadsList);
     }
     counter++;
-    callback();
-  }, function (err) {
-    if(err) {
-      console.log(err);
-    } else {
-      console.log(dataMap);
-      writeData(dataMap);
-    }
-  })
-});
+};
 
-fs.createReadStream(inputFile).pipe(parser);
+let stream = fs.createReadStream(inputFile)
+  .pipe(es.split())
+  .pipe(es.mapSync(function(line){
+      stream.pause();
+
+      lineNumber += 1;
+      let data = line.split(',');
+
+      if(data.length > 1) {
+        parser(data);
+      }
+
+      if(lineNumber > dataLimit) {
+        console.log('data limit reached');
+        stream.end();
+      }
+
+      stream.resume();
+    })
+      .on('error', function(err){
+        console.log('Error while reading file.', err);
+      })
+      .on('end', function(){
+        writeData(dataMap);
+      })
+  );
